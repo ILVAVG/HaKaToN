@@ -37,32 +37,66 @@ baseline/
 └─ archive/                  # устаревшее (v1, старые веса, GNN-чекпоинты)
 ```
 
-## Быстрый старт
+## Быстрый старт (из папки HaKaToN)
 
-```bash
-# окружение для обучения (Python 3.10 + torch/PyG)
-py -3.10 -m venv .venv310
-.venv310\Scripts\python -m pip install -r requirements.txt
-
-# инференс не требует torch/sklearn-классов: только numpy/pandas/joblib
-python baseline_solution.py --nodes my_test/nodes.csv --lines my_test/lines.csv --out-dir predictions
+```bat
+py -3.12 -m pip install -r requirements-inference.txt
+py -3.12 baseline_solution.py --nodes my_test/nodes.csv --lines my_test/lines.csv --out-dir predictions
 ```
 
-`baseline_solution.py` берёт `models/weights_v2_numpy.joblib`. Если его нет —
-`models/weights_v2.joblib`, иначе тривиальный фоллбэк. Для невалидных режимов
-выдаются нули.
+Инференс numpy-весов не импортирует sklearn и не требует torch. По умолчанию
+используется `models/weights_v2_numpy.joblib`; при его отсутствии проверяется
+`models/weights_v2.joblib` (требует исходную совместимую версию sklearn).
+Отсутствующие, повреждённые или несовместимые веса — ошибка с кодом 1, а не
+успешная заглушка. Каталог выдачи создаётся после проверки результата. При ошибке
+старые CSV в существующем каталоге остаются: не принимайте их за новый результат.
+`--weights` принимает только доверенный локальный joblib: этот формат допускает
+исполнение кода при загрузке.
+
+Проверяются уникальность ключей, числа без NaN/inf, совпадение опытов, полнота
+узлов/линий и неизменность геометрии между опытами. Узел 999 может отсутствовать;
+его `P_г` игнорируется как результат балансировки, а не вход. Целевые колонки
+`V/Delta/regime_valid/I_max/I_zarg/I_доп` не нужны и не влияют на прогноз.
+Для предсказанного флага 0 выходы V/Delta/Imax/Izarg обнуляются.
+Модель рассчитана на исходную сеть: неизменность геометрии между опытами не
+доказывает её совпадение с обучающей сетью, поскольку старые веса не содержат
+эталонной топологии. Q_н проверяется, но не используется как признак модели.
 
 ## Обучение и эксперименты
 
-```bash
-.venv310\Scripts\python scripts\exp_stage1.py            # быстрые победы
-.venv310\Scripts\python scripts\physics_check.py         # проверка физики
-.venv310\Scripts\python scripts\exp_stage4.py            # валидация
+Для обучения нужны CSV в `data/` и зависимости из `requirements.txt`.
+В текущем проекте `data/` пуста; `my_test/` — только проверка запуска, не
+независимая оценка качества. Старые sklearn-веса требуют совместимого окружения
+обучения (в отчёте Python 3.10 / sklearn 1.7.2). Torch/PyG нужны только GNN.
+
+```bat
+.venv310\Scripts\python scripts\exp_stage1.py
+.venv310\Scripts\python scripts\physics_check.py
+.venv310\Scripts\python scripts\exp_stage4.py
 .venv310\Scripts\python scripts\train_v2.py --config after
 .venv310\Scripts\python scripts\export_numpy_bundle.py
 ```
 
-Зависимости обучения — в `requirements.txt`. Скрипты сами добавляют `src/` в путь.
+Экспортёр теперь обучает классификатор на train (70%), подбирает порог на val
+(15%) и отдельно оценивает test (15%). Сохраняются именно оценённые веса без
+дообучения на test. Эта оценка относится только к классификатору: регрессоры
+источника уже обучены на всех данных. Ранее заявленные F1=0.9982/порог 0.22
+получены с подбором порога на test и не являются независимой оценкой.
+`exp_stage4.py` сохраняет условную регрессию (`regression_conditional`) и
+реальную выдачу с обнулением (`regression_submitted`) на истинно валидных опытах.
+Отсутствие валидных опытов обозначается `null`, не нулевой ошибкой.
+
+## Регрессионные проверки
+
+```bat
+py -3.12 -m pip install -r requirements.txt
+py -3.12 -m unittest discover -s tests -v
+py -3.12 -m compileall -q baseline_solution.py src scripts tests
+```
+
+Тесты проверяют реальные numpy-веса и CLI, запрет импорта sklearn при инференсе,
+ошибочные входы/веса, независимость от целевых колонок, обнуление, порядок строк,
+согласованность токов и изоляцию train/val/test при экспорте.
 
 ## Итоги и ограничения
 

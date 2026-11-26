@@ -28,6 +28,27 @@ def flag_probs(bundle, X, ids):
     return clf.predict_proba(Xf)[:, list(clf.classes_).index(1)]
 
 
+def evaluate_test_regression(nodes, lines, bundle, te):
+    """Две оценки на истинно валидных опытах: без флага и с обнулением по флагу."""
+    tn = nodes[nodes["ID_опыта"].isin(set(te))]
+    tl = lines[lines["ID_опыта"].isin(set(te))]
+    valid_count = int(tn.groupby("ID_опыта")["regime_valid"].first().eq(1).sum())
+    if valid_count == 0:
+        undefined = {"V_varying_nodes": {"MAE": None, "R2": None},
+                     "V_all_nodes": {"MAE": None, "R2": None},
+                     "V_uniform_R2_nodes": None, "V_median_R2_nodes": None,
+                     "V_worst_nodes": [], "Delta": {"MAE": None, "R2": None},
+                     "Izarg": {"MAE": None, "R2": None}, "Imax_nominal": {"MAE": None, "R2": None},
+                     "parallel_spread": None, "V_MAE_by_load_quintile": [],
+                     "note": "no valid experiences in test -> regression undefined"}
+        return undefined, dict(undefined), 0
+    conditional_nodes, conditional_lines, _, _ = grid_mlp.predict_bundle(tn, tl, bundle, zero_invalid=False)
+    submitted_nodes, submitted_lines, _, _ = grid_mlp.predict_bundle(tn, tl, bundle, zero_invalid=True)
+    conditional = e1.eval_regression(conditional_nodes, conditional_lines, nodes, lines, set(te))
+    submitted = e1.eval_regression(submitted_nodes, submitted_lines, nodes, lines, set(te))
+    return conditional, submitted, valid_count
+
+
 def run_one(frame, nodes, lines, tr, va, te, label, seed, results):
     t0 = time.time()
     print(f"  fit {label} seed={seed} ...", flush=True)
@@ -57,25 +78,14 @@ def run_one(frame, nodes, lines, tr, va, te, label, seed, results):
         fm["F1_macro"] = None; fm["AUC"] = None
         fm["note"] = f"single-class test (class={int(classes[0])})"
 
-    tn = nodes[nodes["ID_опыта"].isin(set(te))]
-    tl = lines[lines["ID_опыта"].isin(set(te))]
-    pn, pl, _, _ = grid_mlp.predict_bundle(tn, tl, b, zero_invalid=False)
-    n_valid_te = int((frame["regime"].loc[te].to_numpy() == 1).sum())
-    if n_valid_te > 0:
-        reg = e1.eval_regression(pn, pl, nodes, lines, set(te))
-    else:
-        reg = {"V_varying_nodes": {"MAE": None, "R2": None},
-               "V_all_nodes": {"MAE": None, "R2": None},
-               "V_uniform_R2_nodes": None, "V_median_R2_nodes": None,
-               "V_worst_nodes": [], "Delta": {"MAE": None, "R2": None},
-               "Izarg": {"MAE": None, "R2": None}, "Imax_nominal": {"MAE": None, "R2": None},
-               "parallel_spread": None, "V_MAE_by_load_quintile": [],
-               "note": "no valid experiences in test -> regression undefined"}
-
+    reg, submitted, n_valid_te = evaluate_test_regression(nodes, lines, b, te)
     rec = {
         "label": label, "seed": seed, "n_valid_test": n_valid_te,
         "flag": fm,
         "V_varying": reg["V_varying_nodes"],
+        "regression_scope": "true_valid_experiences_only",
+        "regression_conditional": reg,
+        "regression_submitted": submitted,
         "V_all": reg["V_all_nodes"],
         "V_uniform_R2_nodes": reg["V_uniform_R2_nodes"],
         "V_median_R2_nodes": reg["V_median_R2_nodes"],
@@ -95,6 +105,14 @@ def run_one(frame, nodes, lines, tr, va, te, label, seed, results):
     vmae = "n/a" if reg["V_varying_nodes"]["MAE"] is None else f"{reg['V_varying_nodes']['MAE']:.4f}"
     print(f"    F1={f1s} acc={fm['accuracy']:.4f} V_MAE={vmae} "
           f"valid_test={n_valid_te} ({rec['elapsed_sec']}s)", flush=True)
+
+
+def summarize_values(values):
+    """Не подменяем неопределённые метрики нулями и не теряем их в сводке."""
+    finite = np.array([v for v in values if v is not None and np.isfinite(v)], dtype=float)
+    return {"mean": float(finite.mean()) if len(finite) else None,
+            "std": float(finite.std()) if len(finite) else None,
+            "values": values, "n_defined": len(finite), "n_total": len(values)}
 
 
 def main():
@@ -127,8 +145,7 @@ def main():
         "Izarg_MAE": lambda r: r["Izarg"]["MAE"],
         "Imax_MAE": lambda r: r["Imax_nominal"]["MAE"],
     }.items():
-        vals = np.array([getter(r) for r in rnd])
-        summary[key] = {"mean": float(vals.mean()), "std": float(vals.std()), "values": vals.tolist()}
+        summary[key] = summarize_values([getter(r) for r in rnd])
     with open(gl.REPORTS_DIR / "stage4_results.json", "w", encoding="utf-8") as f:
         json.dump({"runs": results, "random_summary": summary}, f, ensure_ascii=False, indent=2)
     print("\n3-seed summary:")

@@ -1,12 +1,7 @@
-"""Решение хакатона v2: загрузка weights_v2.joblib и выдача в формате организаторов.
+"""Инференс v2 с проверкой входа и numpy-весами в формате организаторов.
 
-Запуск:
-    python baseline_solution.py --nodes test_nodes.csv --lines test_lines.csv --out-dir predictions
-
-Если weights_v2.joblib отсутствует — тривиальный фоллбэк.
-Формат выхода:
-    pred_nodes.csv: ID_опыта, Номер, V, Delta, Regime_valid
-    pred_lines.csv: ID_опыта, Номер, Imax, A, Izarg, %
+Запуск: python baseline_solution.py --nodes test_nodes.csv --lines test_lines.csv --out-dir predictions
+Отсутствие или несовместимость весов — ошибка, а не успешная выдача заглушки.
 """
 from __future__ import annotations
 
@@ -15,7 +10,6 @@ import sys
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
@@ -56,31 +50,9 @@ def normalize(df: pd.DataFrame, aliases: dict) -> pd.DataFrame:
     return df.rename(columns=rename)
 
 
-def trivial(nodes, lines):
-    U = nodes["U_ном"] if "U_ном" in nodes.columns else pd.Series(0.0, index=nodes.index)
-    pn = pd.DataFrame({"ID_опыта": nodes["ID_опыта"].to_numpy(),
-                       "Номер": nodes["Номер"].to_numpy(),
-                       "V": np.asarray(U, float),
-                       "Delta": 0.0, "Regime_valid": 1})
-    pl = pd.DataFrame({"ID_опыта": lines["ID_опыта"].to_numpy(),
-                       "Номер": lines["Номер"].to_numpy(),
-                       "Imax, A": 0.0, "Izarg, %": 0.0})
-    return pn[NODE_PRED_COLS], pl[LINE_PRED_COLS]
-
-
 def validate(nodes_n, lines_n, pn, pl):
-    assert list(pn.columns) == NODE_PRED_COLS, f"pred_nodes columns {list(pn.columns)}"
-    assert list(pl.columns) == LINE_PRED_COLS, f"pred_lines columns {list(pl.columns)}"
-    assert len(pn) == len(nodes_n), "nodes length mismatch"
-    assert len(pl) == len(lines_n), "lines length mismatch"
-    assert np.isfinite(pn[["V", "Delta"]].to_numpy(float)).all(), "NaN/inf in V/Delta"
-    assert np.isfinite(pl[["Imax, A", "Izarg, %"]].to_numpy(float)).all(), "NaN/inf in currents"
-    assert set(pn["Regime_valid"].unique()).issubset({0, 1}), "Regime_valid must be 0/1"
-    assert pn.groupby("ID_опыта")["Regime_valid"].nunique().max() == 1, "flag varies within exp"
-    assert np.array_equal(pn[["ID_опыта", "Номер"]].to_numpy(),
-                          nodes_n[["ID_опыта", "Номер"]].to_numpy()), "node keys mismatch"
-    assert np.array_equal(pl[["ID_опыта", "Номер"]].to_numpy(),
-                          lines_n[["ID_опыта", "Номер"]].to_numpy()), "line keys mismatch"
+    from grid_validation import validate_predictions
+    validate_predictions(nodes_n, lines_n, pn, pl, NODE_PRED_COLS, LINE_PRED_COLS)
 
 
 def main():
@@ -90,32 +62,31 @@ def main():
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     args = ap.parse_args()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-
     nodes = normalize(pd.read_csv(args.nodes), NODE_ALIASES)
     lines = normalize(pd.read_csv(args.lines), LINE_ALIASES)
 
     wpath = Path(args.weights)
-    if not wpath.exists():
-        wpath = FALLBACK_WEIGHTS if wpath == DEFAULT_WEIGHTS else wpath
-    bundle = None
-    if wpath.exists():
-        try:
-            bundle = joblib.load(wpath)
-        except Exception as exc:  # несовместимость версий sklearn и т.п.
-            print(f"[warn] не удалось загрузить {wpath}: {exc}")
-            bundle = None
-    if bundle is not None:
-        pn, pl, _, _ = grid_mlp.predict_bundle(nodes, lines, bundle, zero_invalid=True)
-    else:
-        print(f"[warn] веса не найдены/не загружены — тривиальный фоллбэк")
-        pn, pl = trivial(nodes, lines)
-
+    if not wpath.exists() and wpath == DEFAULT_WEIGHTS:
+        wpath = FALLBACK_WEIGHTS
+        print("[warn] sklearn-веса требуют совместимой версии sklearn", file=sys.stderr)
+    if not wpath.is_file():
+        raise ValueError(f"Файл весов не найден: {wpath}")
+    try:
+        # joblib/pickle допускает исполнение кода: только доверенные файлы весов.
+        bundle = joblib.load(wpath)
+    except Exception as exc:
+        raise ValueError(f"Не удалось загрузить веса {wpath}: {exc}") from exc
+    pn, pl, _, _ = grid_mlp.predict_bundle(nodes, lines, bundle, zero_invalid=True)
     validate(nodes, lines, pn, pl)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
     pn.to_csv(args.out_dir / "pred_nodes.csv", index=False)
     pl.to_csv(args.out_dir / "pred_lines.csv", index=False)
     print(f"Готово: {args.out_dir/'pred_nodes.csv'}, {args.out_dir/'pred_lines.csv'}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        sys.exit(1)
