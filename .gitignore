@@ -1,0 +1,17 @@
+# окружения
+.venv*/
+venv/
+__pycache__/
+*.pyc
+
+# крупные данные
+data/*.csv
+dataset/
+
+# артефакты python
+.ipynb_checkpoints/
+
+# временное
+predictions_check/
+predictions_py*/
+*.tmp
