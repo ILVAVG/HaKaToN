@@ -1,0 +1,4 @@
+# Только запуск numpy-бандла; sklearn и torch не нужны.
+numpy
+pandas
+joblib
