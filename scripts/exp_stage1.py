@@ -56,8 +56,8 @@ def eval_regression(pn, pl, nodes, lines, exp_set, label=""):
     per.sort(key=lambda t: t[1])
     out["V_worst_nodes"] = [{"node": n, "R2": r, "MAE": m, "std": s} for n, r, m, s in per[:6]]
     r2s = np.array([p[1] for p in per])
-    out["V_uniform_R2_nodes"] = float(r2s.mean())
-    out["V_median_R2_nodes"] = float(np.median(r2s))
+    out["V_uniform_R2_nodes"] = float(r2s.mean()) if len(r2s) else None
+    out["V_median_R2_nodes"] = float(np.median(r2s)) if len(r2s) else None
     out["V_nodes_R2_below_0.99"] = int((r2s < 0.99).sum())
 
     # load quintile V MAE
@@ -65,10 +65,14 @@ def eval_regression(pn, pl, nodes, lines, exp_set, label=""):
     load = val.groupby("ID_опыта")["P_н"].sum() if "P_н" in val else None
     if load is not None:
         j = pd.concat([load.rename("sumPn"), agg.rename("mVerr")], axis=1).dropna()
-        q = pd.qcut(j["sumPn"], 5, labels=False, duplicates="drop")
-        out["V_MAE_by_load_quintile"] = [
-            {"q": int(k), "sumPn": float(j.loc[q == k, "sumPn"].mean()),
-             "MAE": float(j.loc[q == k, "mVerr"].mean())} for k in sorted(q.unique())]
+        out["V_MAE_by_load_quintile"] = []
+        if j["sumPn"].nunique() > 1:
+            q = pd.qcut(j["sumPn"], 5, labels=False, duplicates="drop")
+            out["V_MAE_by_load_quintile"] = [
+                {"q": int(k), "sumPn": float(j.loc[q == k, "sumPn"].mean()),
+                 "MAE": float(j.loc[q == k, "mVerr"].mean())} for k in sorted(q.dropna().unique())]
+        else:
+            out["load_quintile_note"] = "constant load: quintiles undefined"
 
     # parallel spread
     groups = gl.parallel_groups(lines)

@@ -5,14 +5,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-    roc_auc_score,
-)
 
 ROOT = Path(__file__).resolve().parent.parent  # корень проекта (src/..)
 DATA_DIR = ROOT / "data"
@@ -110,25 +102,43 @@ def split_experiences(exp, seed=42, train_frac=0.70, val_frac=0.15, test_frac=0.
 
 
 def reg_metrics(true, pred):
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
     true = np.asarray(true, float); pred = np.asarray(pred, float)
+    if true.shape != pred.shape:
+        raise ValueError("Формы true/pred не совпадают")
+    if true.size == 0:
+        return {"MAE": None, "RMSE": None, "R2": None}
     return {"MAE": float(mean_absolute_error(true, pred)),
             "RMSE": float(np.sqrt(mean_squared_error(true, pred))),
-            "R2": float(r2_score(true, pred, multioutput="uniform_average"))}
+            "R2": float(r2_score(true, pred, multioutput="uniform_average")) if len(true) >= 2 else None}
 
 
 def clf_metrics(y_true, prob, threshold=0.5):
-    pred = (np.asarray(prob) >= threshold).astype(int)
+    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
+    y_true, prob = np.asarray(y_true), np.asarray(prob, float)
+    if y_true.ndim != 1 or prob.shape != y_true.shape or not len(y_true):
+        raise ValueError("Нужны непустые одномерные y_true/prob одинаковой длины")
+    if not np.isin(y_true, [0, 1]).all() or not np.isfinite(prob).all():
+        raise ValueError("Некорректные метки или вероятности")
+    pred = (prob >= threshold).astype(int)
     cm = np.zeros((2, 2), int)
-    for t, p in zip(np.asarray(y_true).astype(int), pred):
+    for t, p in zip(y_true.astype(int), pred):
         cm[t, p] += 1
-    return {"F1_macro": float(f1_score(y_true, pred, average="macro")),
-            "accuracy": float(accuracy_score(y_true, pred)),
-            "AUC": float(roc_auc_score(y_true, prob)),
-            "confusion": cm.tolist(),
-            "threshold": float(threshold)}
+    two_classes = len(np.unique(y_true)) == 2
+    result = {"F1_macro": float(f1_score(y_true, pred, average="macro")) if two_classes else None,
+              "accuracy": float(accuracy_score(y_true, pred)),
+              "AUC": float(roc_auc_score(y_true, prob)) if two_classes else None,
+              "confusion": cm.tolist(), "threshold": float(threshold)}
+    if not two_classes:
+        result["note"] = "single-class test: F1_macro/AUC not reported"
+    return result
 
 
 def best_threshold(y_true, prob, metric="f1macro"):
+    from sklearn.metrics import accuracy_score, f1_score
+
     grid = np.linspace(0.05, 0.95, 91)
     best_t, best_v = 0.5, -1.0
     for t in grid:

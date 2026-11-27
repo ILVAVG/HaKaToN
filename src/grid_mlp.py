@@ -1,12 +1,9 @@
-﻿"""sklearn-MLP пайплайн с пост-обработкой (параллельные линии, квази-константы)
+"""sklearn-MLP пайплайн с пост-обработкой (параллельные линии, квази-константы)
 и версионно-независимым numpy-инференсом."""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
 
 import grid_lib as gl
 
@@ -40,6 +37,9 @@ MEDIUM = {
 
 
 def _fit_mlp(Xtr, Ytr, seed=42, **kw):
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.preprocessing import StandardScaler
+
     xs = StandardScaler().fit(Xtr)
     ys = StandardScaler().fit(Ytr)
     kw = dict(kw)
@@ -73,7 +73,13 @@ def np_forward_prob(cd, X):
         if i < len(coefs) - 1:
             z = np.maximum(z, 0.0)
     z = z.ravel()
-    return 1.0 / (1.0 + np.exp(-z))
+    # Устойчивая сигмоида без переполнения exp.
+    p = np.empty_like(z)
+    positive = z >= 0
+    p[positive] = 1.0 / (1.0 + np.exp(-z[positive]))
+    ez = np.exp(z[~positive])
+    p[~positive] = ez / (1.0 + ez)
+    return p
 
 
 def _const_cols(df, tol=1e-6):
@@ -94,6 +100,8 @@ def fit_bundle(frame, tr_exp, config=None, seed=42, parallel_avg=True, snap=True
     regime = frame["regime"]
     tr = np.asarray(tr_exp)
     ytr = regime.loc[tr].to_numpy()
+
+    from sklearn.ensemble import HistGradientBoostingClassifier
 
     clf = HistGradientBoostingClassifier(
         max_iter=clf_max_iter, learning_rate=0.06, early_stopping=True,
@@ -140,9 +148,18 @@ def fit_bundle(frame, tr_exp, config=None, seed=42, parallel_avg=True, snap=True
 
 
 def predict_bundle(nodes, lines, bundle, zero_invalid=True):
-    frame = gl.build_frame(nodes, lines)
+    from grid_validation import validate_inputs, validate_numpy_bundle
+
+    validate_numpy_bundle(bundle)
+    nodes, lines = validate_inputs(nodes, lines, bundle)
+    # Цели не должны влиять на инференс, даже если заполнены NaN или строками.
+    frame = gl.build_frame(nodes.drop(columns=["V", "Delta", "regime_valid"], errors="ignore"),
+                           lines.drop(columns=["I_max", "I_zarg", "I_доп"], errors="ignore"))
     exp = frame["exp"]
-    X = frame["X"].reindex(columns=bundle["features"], fill_value=0.0)
+    missing = set(bundle["features"]) - set(frame["X"].columns)
+    if missing:
+        raise ValueError(f"Отсутствуют признаки модели: {sorted(missing)}")
+    X = frame["X"].reindex(columns=bundle["features"])
 
     if bundle.get("kind") == "numpy_v2":
         Xn = X.to_numpy(np.float64)
